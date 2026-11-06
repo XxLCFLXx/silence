@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+out/
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# 数据集缓存（几 GB，不要进仓库）
+*.parquet
+.cache/
