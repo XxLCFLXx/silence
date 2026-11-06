@@ -1,51 +1,91 @@
-# 审计：公开的 agent 失败数据里，有没有「自报失败」这个字段？
+# 审计：公开的 agent 失败记录里，有没有「它自己说的话」？
 
-状态：草案 v0.2 · 2026-11-06
+状态：v0.3 · 2026-11-06
 方法：**读 schema，不读文档。**
+
+> v0.3 改了什么：查了 OpenTelemetry GenAI 语义约定，**原结论要修正**。
+> 不是「没有位置」，是「**位置有，主体没有**」。
 
 ---
 
-## 0. 结论先说
+## 0. 结论
 
-所查的三处格式定义里，**没有一个结构化字段，让 agent 说「我可能错了」。**
+| 来源 | 有位置吗 | 有主体约束吗 |
+|---|---|---|
+| Who&When | ❌ | — |
+| MAST | ❌ | — |
+| agentpile / ATIF | ❌ | — |
+| **OpenTelemetry GenAI** | **✅ `gen_ai.evaluation.*`** | **❌** |
 
-失败一律由**外部**标注。而记录「谁发现这个错误」的字段，可选值里**没有 agent 自己**。
+准确的结论是两句：
 
-最直白的一处：MAST 的人工标注表里，有 `annotator_1`、`annotator_2`、`annotator_3` 三列，
-**没有一列留给 agent。**
+> **有标准允许记录一次「pass / fail」的判定。**
+> **但它不规定这个判定由谁做出。**
 
-> 这不是「模型没有不确定性」的证明。
-> 这是「**没有任何一个公开格式，为不确定性留了一个位置**」的证明。
+一个 agent 给自己打 `pass`，在规范上**完全合法**。
+
+这不是「没有位置」，是「**位置存在，主体缺席**」——
+和另一个项目里 `principal` 那个缺口，是同一种形状。
 
 ---
 
 ## 1. 怎么复现
 
-不需要下载数据，不需要装任何东西，一条 HTTP：
+全部不需要下载、不需要认证：
 
 ```bash
+# Who&When / MAST 的列名
 curl "https://datasets-server.huggingface.co/info?dataset=Kevin355%2FWho_and_When"
 curl "https://datasets-server.huggingface.co/info?dataset=mcemri%2FMAST-Data"
-```
 
-返回的 JSON 里，`dataset_info.<config>.features` 就是全部列名。
-任何人可以重跑这两条命令核对本文件。
+# OTel GenAI 的全部属性（自动生成文件，列名即事实）
+curl -s "https://raw.githubusercontent.com/open-telemetry/semantic-conventions-genai/main/docs/registry/attributes/gen-ai.md"
+```
 
 ---
 
-## 2. Who&When 的实际列名
+## 2. OpenTelemetry GenAI（v0.3 新增，最重要的一处）
 
-数据源：<https://huggingface.co/datasets/Kevin355/Who_and_When>
+文件：`docs/registry/attributes/gen-ai.md`（**自动生成**，所以它就是规范本身）
+
+它有四个 `gen_ai.evaluation.*` 属性：
+
+| 属性 | 类型 | 说明（原文） |
+|---|---|---|
+| `gen_ai.evaluation.name` | string | The name of the evaluation metric used for the GenAI response. |
+| `gen_ai.evaluation.score.value` | double | The evaluation score returned by **the evaluator**. |
+| `gen_ai.evaluation.score.label` | string | Human readable label for evaluation. 取值示例含 **`pass`**、**`fail`** |
+| `gen_ai.evaluation.explanation` | string | A free-form explanation for the assigned score provided by **the evaluator**. |
+
+**这是本审计里第一个「位置存在」的发现。**
+
+然后看缺什么：
+
+1. 在这份属性清单里，**没有 `gen_ai.evaluation.evaluator.*`**。
+   「评测者说了什么」有字段，「评测者是谁」没有。
+2. **没有任何条款要求 evaluator ≠ agent。**
+3. `pass` / `fail` 是合法取值，而且没有限定谁能写。
+
+所以：
+
+> **规范定义了一个 `evaluator` 角色，却没有规定谁不能坐这个位置。**
+
+顺带排除一个容易混的：`gen_ai.response.status` 也有 `failed` 这个值，
+但它说的是**生成失败**（provider 层面），不是**任务判断失败**。两回事。
+
+---
+
+## 3. Who&When 的实际列名
+
+<https://huggingface.co/datasets/Kevin355/Who_and_When>
 
 **`Algorithm-Generated` — 126 条**
 
 | 列名 | 类型 |
 |---|---|
 | `is_correct` | bool |
-| `question` | string |
-| `question_ID` | string |
-| `ground_truth` | string |
-| `history` | `[{content: string, name: string, role: string}]` |
+| `question` / `question_ID` / `ground_truth` | string |
+| `history` | `[{content, name, role}]` |
 | `mistake_agent` | string |
 | `mistake_step` | string |
 | `mistake_reason` | string |
@@ -54,157 +94,114 @@ curl "https://datasets-server.huggingface.co/info?dataset=mcemri%2FMAST-Data"
 
 | 列名 | 类型 |
 |---|---|
-| `history` | `[{content: string, role: string}]` |
-| `question` | string |
-| `groundtruth` | string |
+| `history` | `[{content, role}]` |
+| `question` / `groundtruth` / `question_ID` | string |
 | `is_corrected` | bool |
-| `mistake_agent` | string |
-| `mistake_step` | string |
-| `mistake_reason` | string |
-| `mistake_type` | string |
-| `question_ID` | string |
+| `mistake_agent` / `mistake_step` / `mistake_reason` / `mistake_type` | string |
 
-126 + 58 = **184**，与 README 声明的数量一致。
+126 + 58 = **184**，与 README 声明一致。
 
 ---
 
-## 3. MAST 的实际列名
+## 4. MAST 的实际列名
 
-数据源：<https://huggingface.co/datasets/mcemri/MAST-Data>
+<https://huggingface.co/datasets/mcemri/MAST-Data>
 
-**`default` — 1,642 条，14 种失败模式各一列**
+**`default` — 1,642 条**：`mas_name` `llm_name` `benchmark_name` `trace_id` `trace` +
+`mast_annotation{1.1 … 3.3}`（14 种失败模式，各一列 int64）
 
-| 列名 | 类型 |
-|---|---|
-| `mas_name` / `llm_name` / `benchmark_name` | string |
-| `trace_id` | int64 |
-| `trace` | `{key, index, trajectory}` |
-| `mast_annotation` | `{1.1, 1.2, 1.3, 1.4, 1.5, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 3.1, 3.2, 3.3}` 全为 int64 |
+**`human_labelled` — 19 条**：
 
-**`human_labelled` — 19 条，三个人各一列**
+```
+annotations: [{
+    "failure mode": string,
+    "annotator_1":   bool,
+    "annotator_2":   bool,
+    "annotator_3":   bool
+}]
+```
 
-| 列名 | 类型 |
-|---|---|
-| `round` / `mas_name` / `benchmark_name` | string |
-| `trace_id` | int64 |
-| `trace` | string |
-| `annotations` | `[{failure mode: string, annotator_1: bool, annotator_2: bool, annotator_3: bool}]` |
-
-**那三个 `annotator_N` 就是这个审计最干净的一张图：**
-
-> 三个字段回答「**哪个人**认为它失败了」。
-> **零个字段回答「它自己认为失败了吗」。**
+**三个字段回答「哪个人认为它失败了」。零个字段回答「它自己认为失败了吗」。**
 
 ---
 
-## 4. 五个关键词的扫描
+## 5. 五个关键词的扫描
 
-| 词 | Who&When（9 + 10 列） | MAST（19 + 6 列） | agentpile / ATIF |
-|---|---|---|---|
-| `self` | ❌ | ❌ | ❌ |
-| `report` | ❌ | ❌ | ❌ |
-| `confidence` | ❌ | ❌ | ❌ |
-| `uncertain` | ❌ | ❌ | ❌ |
-| `abstain` | ❌ | ❌ | ❌ |
+| 词 | Who&When | MAST | OTel GenAI | agentpile / ATIF |
+|---|---|---|---|---|
+| `self` | ❌ | ❌ | ❌ | ❌ |
+| `report` | ❌ | ❌ | ❌ | ❌ |
+| `confidence` | ❌ | ❌ | ❌ | ❌ |
+| `uncertain` | ❌ | ❌ | ❌ | ❌ |
+| `abstain` | ❌ | ❌ | ❌ | ❌ |
 
-**零命中。** 而且这次不是「文档里没写」，是**列名里没有**。
+**五个词，零命中。**
 
-补充：TRAIL（148 条，span 级）在 Hugging Face 上是 gated 的，
-无认证访问 datasets-server 返回 **401**，本次未查。这是本文件的已知缺口。
+但要读准：**词没有，位置有一个**（OTel 的 `evaluation.*`）。
+所以真正的缺口不是「没有字段」，是**没有「谁在说」**。
 
 ---
 
-## 5. 四个字段，四个问题
-
-（以 Who&When 为例）
+## 6. 四个字段，四个问题（以 Who&When 为例）
 
 | 字段 | 回答什么 | 谁给的 |
 |---|---|---|
-| `is_correct` | 这次**对不对** | 与 `ground_truth` 比对得出 |
+| `is_correct` | 这次**对不对** | 与 ground truth 比对 |
 | `mistake_agent` | **谁**错了 | 标注者 |
 | `mistake_step` | **哪一步**错的 | 标注者 |
-| `mistake_reason` | **为什么**错 | 标注者（自然语言） |
+| `mistake_reason` | **为什么**错 | 标注者 |
 
 四个字段，四个问题，覆盖得相当完整。
 
 **唯独没有字段回答：它自己知不知道自己错了。**
 
-而且看第四列——**四个全是外部。**
+---
+
+## 7. 唯一能放「自报」的地方，是散文
+
+`history` / `trajectory` 是自由文本，agent 当然可以写「我不确定」。
+
+但那不算一个字段：**不可查询、不可比较、不在 schema 里。**
+
+> **结构化的自报不存在，只有散文。**
 
 ---
 
-## 6. 唯一可能放「自报」的地方，以及为什么它不算
+## 8. 记录「谁发现错误」的地方，agent 都不在
 
-`history` / `trajectory` 是自由文本。agent 当然可以在某条消息里写「我不确定」。
+四种设计，同一个缺席：
 
-但那不算一个字段，因为：
-
-- **不可查询**——没法写 `WHERE self_report = 'fail'`
-- **不可比较**——184 条里有多少条说过「不确定」，你数不出来
-- **不在 schema 里**——它不是一个位置，只是一段散文
-
-所以准确的表述是：
-
-> **结构化的自报字段不存在，只有散文。**
-
-这句话比「没有自报」硬，因为它连反驳的余地都堵住了。
-
----
-
-## 7. 记录「谁发现错误」的字段，agent 不在选项里
-
-两处独立地证明了同一件事。
-
-**`agentpile`** 把 14 个数据集统一成 ATIF 记录，标签带 `label_source`，取值词表是：
-
-> **expert / LLM judge / benchmark**
-
-三个值，三种外部视角。
-
-**`MAST`** 的人工标注表里，是 `annotator_1` / `annotator_2` / `annotator_3`。
-
-三个位置，三个人。
-
-**两个系统，两种设计，同一个缺席。**
-
-这和另一个项目是同一个形状：
-
-| 项目 | 记录什么 | 缺什么 |
+| 来源 | 「谁发现」怎么写 | agent 在里面吗 |
 |---|---|---|
-| `recourse` | 谁**负责** | **人**不在字段里 |
-| `agentpile` | 谁**发现错误** | **agent 自己**不在选项里 |
-| `MAST` | 谁**判定失败** | **agent 自己**不在位置里 |
-
-三个都是：**字段存在，但这个主体不在里面。**
+| Who&When | `mistake_agent`（标注得出） | ❌ |
+| MAST | `annotator_1/2/3` | ❌ |
+| agentpile | `label_source ∈ {expert, LLM judge, benchmark}` | ❌ |
+| **OTel** | **没有这个字段**（只有 `evaluator` 这个**角色**，没有身份） | ❌ |
 
 ---
 
-## 8. 顺手算出的一个数
+## 9. 那个数
 
 `agentpile` 覆盖 14 个数据集、约 **410,000 条运行**。
-
-其中做过「错误定位到具体哪一步」标注的：
-
-| 数据集 | 步/span 级标注 | 数量 |
-|---|---|---|
-| Who&When | 步 | 184 |
-| TRAIL | span | 148 |
-| | **合计** | **332** |
+其中做过步级 / span 级错误定位标注的：
 
 ```
+Who&When 184 + TRAIL 148 = 332
 332 / 410,000 ≈ 0.08%
 ```
 
 > **万分之八的运行，被定位到过具体哪一步出错。**
 > 剩下的 99.92%，不是没有错，是**没有人看**。
 
-措辞很重要：**不是「没有错误」，是「没有人看」。** 这是整个测量的地基。
+措辞很重要：**不是「没有错误」，是「没有人看」。**
+
+（TRAIL 在 Hugging Face 上是 gated，本次未直接查 schema，数量取自 agentpile 的清单。）
 
 ---
 
-## 9. 顺手发现的一处数据质量问题
+## 10. 顺手发现的一处数据质量问题
 
-Who&When 的两个 config，字段不一致：
+Who&When 两个 config 字段不一致：
 
 | | Algorithm-Generated | Hand-Crafted |
 |---|---|---|
@@ -218,42 +215,38 @@ Who&When 的两个 config，字段不一致：
 
 ---
 
-## 10. 这个审计证明了什么，没证明什么
+## 11. 这个审计证明了什么，没证明什么
 
 **证明了：**
 
-- 三个公开格式里，不存在结构化的「agent 自报失败」字段
-- 两处独立的「谁发现错误」设计里，都没有 agent 自己
+- 四处里，三处没有给「自报」留位置，一处有位置但没有主体约束
+- 五处「谁发现错误」的设计里，agent 都不在其中
 - 步级错误标注的覆盖率约 0.08%
 
 **没有证明：**
 
 - 模型内部没有不确定性表征（那需要探针实验，不是读 schema）
 - 自由文本里没有犹豫的表达（那需要跑 NLP，且结论会很软）
-- TRAIL 和其余 11 个数据集也没有（**TRAIL 因 gated 未查**）
+- 其余 11 个数据集也没有
 
-**最硬的局限：只查了三处。**
-它们是「失败归因」这条线里最核心的三个，但它们是三个，不是全部。
+**最硬的局限：只查了四处。**
 
 ---
 
-## 11. 待查清单
+## 12. 待查
 
 - [x] Who&When（184 条，步级）
-- [x] MAST（1,642 条，14 种失败模式 + 人工标注）
-- [ ] **TRAIL（148 条，span 级）—— 需要 HF 认证，401**
-- [ ] OpenTelemetry GenAI 语义约定 —— 标准层面有没有 `gen_ai.agent.self_report`
-- [ ] AgentRewardBench / SWE-Gym —— 它们的 `outcome` 是测试结果还是自评？
-- [ ] ATIF v1.7 规范原文 —— agentpile 说「ATIF 没有字段的放 extra」，那 ATIF 本身有什么
-
-查完这几项，如果仍然全空，结论就从「三处」升级成「这条线的全部」。
+- [x] MAST（1,642 条，14 种失败模式）
+- [x] OpenTelemetry GenAI 语义约定
+- [ ] TRAIL（148 条，span 级）—— **gated，401**
+- [ ] AgentRewardBench / SWE-Gym —— `outcome` 是测试结果还是自评？
+- [ ] ATIF v1.7 规范原文
 
 ---
 
-## 12. 一句话
+## 13. 一句话
 
-> **数据里有字段回答「对不对」「谁错了」「哪一步」「为什么」。**
-> **有字段回答「哪三个人认为它错了」。**
-> **没有字段回答「它自己知不知道」。**
-
-而 41 万条运行里，只有万分之八被人看一眼——**所以也没有人代替它回答。**
+> **Who&When、MAST、agentpile 里没有这个位置。**
+> **OTel 里有位置，但没有名字。**
+>
+> 一个 agent 给自己打 `pass`，在规范上完全合法——**因为规范没说那个位置不能是它自己坐。**
